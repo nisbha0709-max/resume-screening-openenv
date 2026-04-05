@@ -1,92 +1,71 @@
 name: resume-screening-openenv
 version: "1.0.0"
-description: >
-  An OpenEnv-compliant simulation environment where an AI agent performs
-  resume screening against job descriptions and makes hiring decisions
-  (accept / reject / shortlist). Designed for evaluating LLM reasoning
-  quality in a real-world HR context.
-
-author: OpenEnv Submission
+description: "An OpenEnv-compliant environment where an AI agent performs resume screening against job descriptions and makes hiring decisions (accept, reject, or shortlist)."
 license: MIT
 
 environment:
   type: episodic
   max_steps: 1
-  action_space:
-    type: structured
-    fields:
-      decision:
-        type: enum
-        values: [accept, reject, shortlist]
-      reasoning:
-        type: string
-        min_length: 10
-  observation_space:
-    fields:
-      task_id: string
-      difficulty: enum[easy, medium, hard]
-      job_description: string
-      resume: string
-      history: list[HistoryEntry]
-      step_count: integer
+
+action_space:
+  type: object
+  properties:
+    decision:
+      type: string
+      enum:
+        - accept
+        - reject
+        - shortlist
+    reasoning:
+      type: string
+
+observation_space:
+  type: object
+  properties:
+    task_id:
+      type: string
+    difficulty:
+      type: string
+    job_description:
+      type: string
+    resume:
+      type: string
+    history:
+      type: array
+    step_count:
+      type: integer
 
 reward:
-  range: [0.0, 1.0]
-  type: partial
-  components:
-    - name: skill_match_score
-      weight: 0.25
-      description: Keyword overlap between resume and required skills
-    - name: decision_correctness
-      weight: 0.40
-      description: How correct the decision is vs. expected answer
-    - name: reasoning_quality
-      weight: 0.20
-      description: Presence of good reasoning keywords in agent output
-    - name: partial_credit
-      weight: 0.15
-      description: Extra credit for near-correct decisions (e.g. shortlist vs accept)
-  penalty:
-    - condition: wrong decision (opposite of expected)
-      deduction: 0.30
+  type: float
+  min: 0.0
+  max: 1.0
 
 tasks:
   - id: task_easy
     difficulty: easy
-    description: Clear strong candidate — correct answer is accept
+    description: "Clear strong candidate — correct answer is accept"
     expected_decision: accept
 
   - id: task_medium
     difficulty: medium
-    description: Underqualified candidate — correct answer is reject
+    description: "Underqualified candidate — correct answer is reject"
     expected_decision: reject
 
   - id: task_hard
     difficulty: hard
-    description: Partial match / ambiguous candidate — correct answer is shortlist
+    description: "Partial match candidate — correct answer is shortlist"
     expected_decision: shortlist
 
 api:
-  endpoints:
-    - path: /reset
-      method: POST
-      description: Reset environment for a new episode
-    - path: /step
-      method: POST
-      description: Execute an agent action
-    - path: /state
-      method: GET
-      description: Get current environment state
-    - path: /tasks
-      method: GET
-      description: List available tasks
+  reset:
+    method: POST
+    path: /reset
+  step:
+    method: POST
+    path: /step
+  state:
+    method: GET
+    path: /state
 
 runtime:
-  max_duration_minutes: 20
-  min_cpu: 2
-  min_ram_gb: 8
   port: 7860
-
-deployment:
-  platform: huggingface_spaces
-  sdk: docker

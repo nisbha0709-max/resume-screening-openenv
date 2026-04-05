@@ -84,9 +84,10 @@ async def list_tasks():
 
 
 @app.post("/reset", response_model=Observation)
-async def reset(body: ResetRequest):
+async def reset(body: Optional[ResetRequest] = None):
     """
     Reset the environment to a new episode for the given task.
+    Body is optional — defaults to task_easy if not provided.
 
     Args:
         task_id: 'task_easy' | 'task_medium' | 'task_hard'
@@ -95,8 +96,9 @@ async def reset(body: ResetRequest):
         Initial observation (job description + resume).
     """
     try:
-        obs = env.reset(task_id=body.task_id)
-        logger.info(f"[API] /reset called with task_id='{body.task_id}'")
+        task_id = body.task_id if body else "task_easy"
+        obs = env.reset(task_id=task_id)
+        logger.info(f"[API] /reset called with task_id='{task_id}'")
         return obs
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -117,6 +119,9 @@ async def step(body: StepRequest):
         observation, reward (with breakdown), done flag, info dict.
     """
     try:
+        # Auto-reset to task_easy if environment not yet initialized
+        if env._state is None or env._state.done:
+            env.reset(task_id="task_easy")
         obs, reward, done, info = env.step(body.action)
         logger.info(
             f"[API] /step: decision={body.action.decision}, "

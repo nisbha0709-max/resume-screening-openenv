@@ -1,0 +1,12 @@
+"""
+server/app.py — Entry point for OpenEnv multi-mode deployment.
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from server import app  # noqa: F401
+
+__all__ = ["app"]

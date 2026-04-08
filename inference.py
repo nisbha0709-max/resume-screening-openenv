@@ -1,9 +1,11 @@
 """
-inference.py — Resume Screening OpenEnv (Validator-Compliant)
+inference.py — Resume Screening OpenEnv (Fully Validator-Compliant)
 
 Requirements satisfied:
-✅ Uses LiteLLM proxy (API_BASE_URL + API_KEY)
-✅ Prints structured output
+✅ Uses API_BASE_URL, MODEL_NAME, HF_TOKEN
+✅ Uses OpenAI client
+✅ Routes through LiteLLM proxy
+✅ Emits STRICT structured stdout logs
 """
 
 import os
@@ -11,19 +13,20 @@ import json
 import requests
 from openai import OpenAI
 
-# ─── Config (STRICT — DO NOT CHANGE) ──────────────────────────────────────────
-API_BASE_URL = os.environ["API_BASE_URL"]   
-API_KEY      = os.environ["API_KEY"]        
+# ─── Config (STRICT — REQUIRED) ───────────────────────────────────────────────
+API_BASE_URL = os.environ["API_BASE_URL"]          # LLM proxy endpoint
 MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
+API_KEY      = os.environ.get("HF_TOKEN")          # REQUIRED key
 
 TASK_IDS = ["task_easy", "task_medium", "task_hard"]
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
-SYSTEM_PROMPT = """You are a senior HR professional and talent acquisition specialist.
-You MUST respond with JSON:
+SYSTEM_PROMPT = """You are a senior HR professional.
+
+Respond ONLY in JSON:
 {
-  "decision": "<accept|reject|shortlist>",
-  "reasoning": "<clear explanation>"
+  "decision": "accept|reject|shortlist",
+  "reasoning": "brief explanation"
 }
 """
 
@@ -36,11 +39,11 @@ Candidate Resume:
 Evaluate the candidate.
 """
 
-# ─── OpenAI Client (FIXED) ────────────────────────────────────────────────────
+# ─── OpenAI Client (MANDATORY) ────────────────────────────────────────────────
 def get_client() -> OpenAI:
     return OpenAI(
         api_key=API_KEY,
-        base_url=API_BASE_URL,  
+        base_url=API_BASE_URL  # MUST use proxy
     )
 
 # ─── Environment API ──────────────────────────────────────────────────────────
@@ -81,6 +84,7 @@ def agent_decide(client: OpenAI, observation: dict):
 
     raw = completion.choices[0].message.content.strip()
 
+    # Handle markdown-wrapped JSON
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -90,13 +94,13 @@ def agent_decide(client: OpenAI, observation: dict):
     parsed = json.loads(raw)
     return parsed["decision"], parsed["reasoning"]
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+# ─── Main Execution ───────────────────────────────────────────────────────────
 def main():
     client = get_client()
     scores = []
     task_name = "resume_screening"
 
-    # ✅ START
+    # ✅ START (STRICT FORMAT)
     print(f"[START] task={task_name}", flush=True)
 
     step_count = 0
@@ -104,7 +108,7 @@ def main():
     for task_id in TASK_IDS:
         step_count += 1
 
-        # Reset
+        # Reset environment
         try:
             obs = env_reset(task_id)
         except Exception:
@@ -113,13 +117,13 @@ def main():
             print(f"[STEP] step={step_count} reward={reward}", flush=True)
             continue
 
-        # Decide
+        # Agent decision
         try:
             decision, reasoning = agent_decide(client, obs)
         except Exception:
             decision, reasoning = "shortlist", "fallback"
 
-        # Step
+        # Step environment
         try:
             result = env_step(decision, reasoning)
             reward = result["reward"]["total"]
@@ -128,17 +132,17 @@ def main():
 
         scores.append(reward)
 
-        
+        # ✅ STEP (STRICT FORMAT)
         print(f"[STEP] step={step_count} reward={reward}", flush=True)
 
     # Final score
     final_score = round(sum(scores) / len(scores), 4) if scores else 0.0
 
-    
+    # ✅ END (STRICT FORMAT)
     print(f"[END] task={task_name} score={final_score} steps={step_count}", flush=True)
 
     return final_score
 
-
+# ─── Entry Point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     main()

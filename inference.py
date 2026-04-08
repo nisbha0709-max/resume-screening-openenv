@@ -1,11 +1,10 @@
 """
-inference.py — Resume Screening OpenEnv (Fully Validator-Compliant)
+inference.py — FINAL (Phase 2 Compliant)
 
-Requirements satisfied:
-✅ Uses API_BASE_URL, MODEL_NAME, HF_TOKEN
+✅ Uses API_BASE_URL + API_KEY (MANDATORY)
 ✅ Uses OpenAI client
-✅ Routes through LiteLLM proxy
-✅ Emits STRICT structured stdout logs
+✅ Sends calls through LiteLLM proxy
+✅ Emits strict structured stdout logs
 """
 
 import os
@@ -13,14 +12,14 @@ import json
 import requests
 from openai import OpenAI
 
-# ─── Config (STRICT — REQUIRED) ───────────────────────────────────────────────
-API_BASE_URL = os.environ["API_BASE_URL"]          # LLM proxy endpoint
+# ─── REQUIRED CONFIG ──────────────────────────────────────────────────────────
+API_BASE_URL = os.environ["API_BASE_URL"]   # MUST use
+API_KEY      = os.environ["API_KEY"]        # MUST use
 MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-API_KEY      = os.environ.get("HF_TOKEN")          # REQUIRED key
 
 TASK_IDS = ["task_easy", "task_medium", "task_hard"]
 
-# ─── Prompts ──────────────────────────────────────────────────────────────────
+# ─── PROMPTS ──────────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a senior HR professional.
 
 Respond ONLY in JSON:
@@ -39,52 +38,47 @@ Candidate Resume:
 Evaluate the candidate.
 """
 
-# ─── OpenAI Client (MANDATORY) ────────────────────────────────────────────────
-def get_client() -> OpenAI:
+# ─── CLIENT (CRITICAL) ────────────────────────────────────────────────────────
+def get_client():
     return OpenAI(
         api_key=API_KEY,
-        base_url=API_BASE_URL  # MUST use proxy
+        base_url=API_BASE_URL  # ensures proxy usage
     )
 
-# ─── Environment API ──────────────────────────────────────────────────────────
-def env_reset(task_id: str) -> dict:
-    response = requests.post(
-        f"{API_BASE_URL}/reset",
-        json={"task_id": task_id},
-        timeout=30,
-    )
-    response.raise_for_status()
-    return response.json()
+# ─── ENV API ──────────────────────────────────────────────────────────────────
+def env_reset(task_id):
+    r = requests.post(f"{API_BASE_URL}/reset", json={"task_id": task_id}, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
-def env_step(decision: str, reasoning: str) -> dict:
-    response = requests.post(
+def env_step(decision, reasoning):
+    r = requests.post(
         f"{API_BASE_URL}/step",
         json={"action": {"decision": decision, "reasoning": reasoning}},
-        timeout=30,
+        timeout=30
     )
-    response.raise_for_status()
-    return response.json()
+    r.raise_for_status()
+    return r.json()
 
-# ─── Agent ────────────────────────────────────────────────────────────────────
-def agent_decide(client: OpenAI, observation: dict):
-    user_prompt = USER_PROMPT_TEMPLATE.format(
-        job_description=observation["job_description"],
-        resume=observation["resume"],
+# ─── AGENT ────────────────────────────────────────────────────────────────────
+def agent_decide(client, obs):
+    prompt = USER_PROMPT_TEMPLATE.format(
+        job_description=obs["job_description"],
+        resume=obs["resume"],
     )
 
-    completion = client.chat.completions.create(
+    response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
+            {"role": "user", "content": prompt},
         ],
         temperature=0.0,
         max_tokens=300,
     )
 
-    raw = completion.choices[0].message.content.strip()
+    raw = response.choices[0].message.content.strip()
 
-    # Handle markdown-wrapped JSON
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -94,13 +88,13 @@ def agent_decide(client: OpenAI, observation: dict):
     parsed = json.loads(raw)
     return parsed["decision"], parsed["reasoning"]
 
-# ─── Main Execution ───────────────────────────────────────────────────────────
+# ─── MAIN ─────────────────────────────────────────────────────────────────────
 def main():
     client = get_client()
     scores = []
     task_name = "resume_screening"
 
-    # ✅ START (STRICT FORMAT)
+    # START
     print(f"[START] task={task_name}", flush=True)
 
     step_count = 0
@@ -108,7 +102,7 @@ def main():
     for task_id in TASK_IDS:
         step_count += 1
 
-        # Reset environment
+        # Reset
         try:
             obs = env_reset(task_id)
         except Exception:
@@ -117,13 +111,13 @@ def main():
             print(f"[STEP] step={step_count} reward={reward}", flush=True)
             continue
 
-        # Agent decision
+        # Decide
         try:
             decision, reasoning = agent_decide(client, obs)
         except Exception:
             decision, reasoning = "shortlist", "fallback"
 
-        # Step environment
+        # Step
         try:
             result = env_step(decision, reasoning)
             reward = result["reward"]["total"]
@@ -132,17 +126,16 @@ def main():
 
         scores.append(reward)
 
-        # ✅ STEP (STRICT FORMAT)
+        # STEP
         print(f"[STEP] step={step_count} reward={reward}", flush=True)
 
-    # Final score
     final_score = round(sum(scores) / len(scores), 4) if scores else 0.0
 
-    # ✅ END (STRICT FORMAT)
+    # END
     print(f"[END] task={task_name} score={final_score} steps={step_count}", flush=True)
 
     return final_score
 
-# ─── Entry Point ──────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     main()

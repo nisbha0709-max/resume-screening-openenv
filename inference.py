@@ -6,26 +6,16 @@ Reads environment from:
   MODEL_NAME       (default: gpt-4o-mini)
   OPENAI_API_KEY   (or HF_TOKEN for HuggingFace-hosted models)
 
-Runs all 3 tasks, logs each step, and reports a reproducible score.
-
-Logging format:
-  [START]
-  [STEP]  task=... decision=... reward=...
-  [END]   total_score=...
+Outputs STRICT structured logs to stdout:
+  [START] task=...
+  [STEP] step=... reward=...
+  [END] task=... score=... steps=...
 """
 
 import os
 import json
-import logging
 import requests
 from openai import OpenAI
-
-# ─── Logging ──────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-)
-logger = logging.getLogger(__name__)
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
@@ -51,7 +41,8 @@ Guidelines:
 - "shortlist": The candidate partially matches and warrants further evaluation.
 
 Your reasoning should be specific, referencing skills, experience, and qualifications.
-Respond ONLY with the JSON object, no other text."""
+Respond ONLY with the JSON object, no other text.
+"""
 
 USER_PROMPT_TEMPLATE = """Job Description:
 {job_description}
@@ -63,22 +54,18 @@ Candidate Resume:
 
 ---
 
-Please evaluate this candidate for the role and provide your hiring decision."""
-
+Please evaluate this candidate for the role and provide your hiring decision.
+"""
 
 # ─── OpenAI client ────────────────────────────────────────────────────────────
-
 def get_client() -> OpenAI:
     return OpenAI(
         api_key=API_KEY or "not-needed",
-        base_url=None,  # Use default OpenAI endpoint; override for HF inference
+        base_url=None,
     )
 
-
 # ─── Environment API helpers ──────────────────────────────────────────────────
-
 def env_reset(task_id: str) -> dict:
-    """Call /reset on the environment server."""
     response = requests.post(
         f"{API_BASE_URL}/reset",
         json={"task_id": task_id},
@@ -87,9 +74,7 @@ def env_reset(task_id: str) -> dict:
     response.raise_for_status()
     return response.json()
 
-
 def env_step(decision: str, reasoning: str) -> dict:
-    """Call /step on the environment server."""
     response = requests.post(
         f"{API_BASE_URL}/step",
         json={"action": {"decision": decision, "reasoning": reasoning}},
@@ -98,14 +83,8 @@ def env_step(decision: str, reasoning: str) -> dict:
     response.raise_for_status()
     return response.json()
 
-
 # ─── Agent inference ─────────────────────────────────────────────────────────
-
 def agent_decide(client: OpenAI, observation: dict) -> tuple[str, str]:
-    """
-    Call the LLM to make a hiring decision based on the observation.
-    Returns (decision, reasoning).
-    """
     user_prompt = USER_PROMPT_TEMPLATE.format(
         job_description=observation["job_description"],
         resume=observation["resume"],
@@ -115,15 +94,15 @@ def agent_decide(client: OpenAI, observation: dict) -> tuple[str, str]:
         model=MODEL_NAME,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": user_prompt},
+            {"role": "user", "content": user_prompt},
         ],
-        temperature=0.0,   # Deterministic output
+        temperature=0.0,
         max_tokens=512,
     )
 
     raw = completion.choices[0].message.content.strip()
 
-    # Strip markdown fences if present
+    # Remove markdown formatting if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -133,76 +112,55 @@ def agent_decide(client: OpenAI, observation: dict) -> tuple[str, str]:
     parsed = json.loads(raw)
     return parsed["decision"], parsed["reasoning"]
 
-
 # ─── Main loop ────────────────────────────────────────────────────────────────
-
 def main():
     client = get_client()
     scores = []
+    task_name = "resume_screening"
 
-    logger.info("[START]")
-    logger.info(f"  model={MODEL_NAME}")
-    logger.info(f"  api_base={API_BASE_URL}")
-    logger.info(f"  tasks={TASK_IDS}")
-    logger.info("")
+    # ✅ START block
+    print(f"[START] task={task_name}", flush=True)
+
+    step_count = 0
 
     for task_id in TASK_IDS:
-        logger.info(f"[STEP] task={task_id}")
+        step_count += 1
 
-        # 1. Reset environment
+        # Reset environment
         try:
             obs = env_reset(task_id)
-        except Exception as e:
-            logger.error(f"  [ERROR] Failed to reset task '{task_id}': {e}")
-            scores.append(0.0)
+        except Exception:
+            reward_total = 0.0
+            scores.append(reward_total)
+            print(f"[STEP] step={step_count} reward={reward_total}", flush=True)
             continue
 
-        logger.info(f"  difficulty={obs['difficulty']}")
-
-        # 2. Agent makes a decision
+        # Agent decision
         try:
             decision, reasoning = agent_decide(client, obs)
-        except Exception as e:
-            logger.error(f"  [ERROR] Agent failed on task '{task_id}': {e}")
-            # Fallback: shortlist everything to get partial credit
-            decision, reasoning = "shortlist", "Unable to generate reasoning due to an error."
+        except Exception:
+            decision, reasoning = "shortlist", "Fallback due to error"
 
-        logger.info(f"  decision={decision}")
-        logger.info(f"  reasoning_preview={reasoning[:120].replace(chr(10), ' ')}...")
-
-        # 3. Step the environment
+        # Step environment
         try:
             result = env_step(decision, reasoning)
-        except Exception as e:
-            logger.error(f"  [ERROR] Failed to step environment: {e}")
-            scores.append(0.0)
-            continue
-
-        reward_total = result["reward"]["total"]
-        feedback     = result["reward"]["feedback"]
-        breakdown    = result["reward"]["breakdown"]
-
-        logger.info(f"  reward={reward_total:.4f}")
-        logger.info(f"  skill_match={breakdown['skill_match_score']:.2f} "
-                    f"decision={breakdown['decision_correctness']:.2f} "
-                    f"reasoning={breakdown['reasoning_quality']:.2f} "
-                    f"partial={breakdown['partial_credit']:.2f} "
-                    f"penalty={breakdown['penalty']:.2f}")
-        logger.info(f"  feedback={feedback}")
-        logger.info("")
+            reward_total = result["reward"]["total"]
+        except Exception:
+            reward_total = 0.0
 
         scores.append(reward_total)
 
-    # ─── Final score ──────────────────────────────────────────────────────────
+        # ✅ STEP block (STRICT FORMAT)
+        print(f"[STEP] step={step_count} reward={reward_total}", flush=True)
+
+    # Final score
     total_score = round(sum(scores) / len(scores), 4) if scores else 0.0
 
-    logger.info("[END]")
-    logger.info(f"  scores_per_task={scores}")
-    logger.info(f"  total_score={total_score:.4f}")
-    logger.info(f"  max_possible=1.0000")
+    # ✅ END block
+    print(f"[END] task={task_name} score={total_score} steps={step_count}", flush=True)
 
     return total_score
 
-
+# ─── Entry ───────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     main()

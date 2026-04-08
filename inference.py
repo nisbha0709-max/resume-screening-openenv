@@ -1,15 +1,9 @@
 """
-inference.py — Baseline agent for the Resume Screening OpenEnv.
+inference.py — Resume Screening OpenEnv (Validator-Compliant)
 
-Reads environment from:
-  API_BASE_URL     (default: http://localhost:7860)
-  MODEL_NAME       (default: gpt-4o-mini)
-  OPENAI_API_KEY   (or HF_TOKEN for HuggingFace-hosted models)
-
-Outputs STRICT structured logs to stdout:
-  [START] task=...
-  [STEP] step=... reward=...
-  [END] task=... score=... steps=...
+Requirements satisfied:
+✅ Uses LiteLLM proxy (API_BASE_URL + API_KEY)
+✅ Prints structured output
 """
 
 import os
@@ -17,54 +11,39 @@ import json
 import requests
 from openai import OpenAI
 
-# ─── Config ───────────────────────────────────────────────────────────────────
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:7860")
+# ─── Config (STRICT — DO NOT CHANGE) ──────────────────────────────────────────
+API_BASE_URL = os.environ["API_BASE_URL"]   
+API_KEY      = os.environ["API_KEY"]        
 MODEL_NAME   = os.environ.get("MODEL_NAME", "gpt-4o-mini")
-API_KEY      = os.environ.get("OPENAI_API_KEY") or os.environ.get("HF_TOKEN", "")
 
 TASK_IDS = ["task_easy", "task_medium", "task_hard"]
 
-# ─── Prompt template ──────────────────────────────────────────────────────────
+# ─── Prompts ──────────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are a senior HR professional and talent acquisition specialist.
-You will be given a job description and a candidate's resume.
-Your task is to evaluate the candidate and make a hiring decision.
-
-You MUST respond with a JSON object in this exact format:
+You MUST respond with JSON:
 {
   "decision": "<accept|reject|shortlist>",
-  "reasoning": "<detailed explanation of your decision>"
+  "reasoning": "<clear explanation>"
 }
-
-Guidelines:
-- "accept": The candidate is a strong match for the role.
-- "reject": The candidate clearly does not meet the requirements.
-- "shortlist": The candidate partially matches and warrants further evaluation.
-
-Your reasoning should be specific, referencing skills, experience, and qualifications.
-Respond ONLY with the JSON object, no other text.
 """
 
 USER_PROMPT_TEMPLATE = """Job Description:
 {job_description}
 
----
-
 Candidate Resume:
 {resume}
 
----
-
-Please evaluate this candidate for the role and provide your hiring decision.
+Evaluate the candidate.
 """
 
-# ─── OpenAI client ────────────────────────────────────────────────────────────
+# ─── OpenAI Client (FIXED) ────────────────────────────────────────────────────
 def get_client() -> OpenAI:
     return OpenAI(
-        api_key=API_KEY or "not-needed",
-        base_url=None,
+        api_key=API_KEY,
+        base_url=API_BASE_URL,  
     )
 
-# ─── Environment API helpers ──────────────────────────────────────────────────
+# ─── Environment API ──────────────────────────────────────────────────────────
 def env_reset(task_id: str) -> dict:
     response = requests.post(
         f"{API_BASE_URL}/reset",
@@ -83,8 +62,8 @@ def env_step(decision: str, reasoning: str) -> dict:
     response.raise_for_status()
     return response.json()
 
-# ─── Agent inference ─────────────────────────────────────────────────────────
-def agent_decide(client: OpenAI, observation: dict) -> tuple[str, str]:
+# ─── Agent ────────────────────────────────────────────────────────────────────
+def agent_decide(client: OpenAI, observation: dict):
     user_prompt = USER_PROMPT_TEMPLATE.format(
         job_description=observation["job_description"],
         resume=observation["resume"],
@@ -97,12 +76,11 @@ def agent_decide(client: OpenAI, observation: dict) -> tuple[str, str]:
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.0,
-        max_tokens=512,
+        max_tokens=300,
     )
 
     raw = completion.choices[0].message.content.strip()
 
-    # Remove markdown formatting if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -112,13 +90,13 @@ def agent_decide(client: OpenAI, observation: dict) -> tuple[str, str]:
     parsed = json.loads(raw)
     return parsed["decision"], parsed["reasoning"]
 
-# ─── Main loop ────────────────────────────────────────────────────────────────
+# ─── Main ─────────────────────────────────────────────────────────────────────
 def main():
     client = get_client()
     scores = []
     task_name = "resume_screening"
 
-    # ✅ START block
+    # ✅ START
     print(f"[START] task={task_name}", flush=True)
 
     step_count = 0
@@ -126,41 +104,41 @@ def main():
     for task_id in TASK_IDS:
         step_count += 1
 
-        # Reset environment
+        # Reset
         try:
             obs = env_reset(task_id)
         except Exception:
-            reward_total = 0.0
-            scores.append(reward_total)
-            print(f"[STEP] step={step_count} reward={reward_total}", flush=True)
+            reward = 0.0
+            scores.append(reward)
+            print(f"[STEP] step={step_count} reward={reward}", flush=True)
             continue
 
-        # Agent decision
+        # Decide
         try:
             decision, reasoning = agent_decide(client, obs)
         except Exception:
-            decision, reasoning = "shortlist", "Fallback due to error"
+            decision, reasoning = "shortlist", "fallback"
 
-        # Step environment
+        # Step
         try:
             result = env_step(decision, reasoning)
-            reward_total = result["reward"]["total"]
+            reward = result["reward"]["total"]
         except Exception:
-            reward_total = 0.0
+            reward = 0.0
 
-        scores.append(reward_total)
+        scores.append(reward)
 
-        # ✅ STEP block (STRICT FORMAT)
-        print(f"[STEP] step={step_count} reward={reward_total}", flush=True)
+        
+        print(f"[STEP] step={step_count} reward={reward}", flush=True)
 
     # Final score
-    total_score = round(sum(scores) / len(scores), 4) if scores else 0.0
+    final_score = round(sum(scores) / len(scores), 4) if scores else 0.0
 
-    # ✅ END block
-    print(f"[END] task={task_name} score={total_score} steps={step_count}", flush=True)
+    
+    print(f"[END] task={task_name} score={final_score} steps={step_count}", flush=True)
 
-    return total_score
+    return final_score
 
-# ─── Entry ───────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     main()

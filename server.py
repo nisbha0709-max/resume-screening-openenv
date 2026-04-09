@@ -153,3 +153,9 @@ async def state():
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=7860, reload=False)
+
+
+@app.get("/graders")
+async def graders():
+    """Return registered graders for all tasks."""
+    return env.get_graders()

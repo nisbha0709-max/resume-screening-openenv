@@ -1,6 +1,5 @@
 """
-env.py — Core environment logic for the Resume Screening OpenEnv.
-Each task has a grader. Scores are always strictly between 0 and 1.
+env.py - OpenEnv environment. All 3 tasks have registered graders.
 """
 
 import logging
@@ -14,22 +13,17 @@ logger = logging.getLogger(__name__)
 
 
 class ResumeScreeningEnv:
-    """OpenEnv-compliant resume screening environment."""
-
-    MAX_STEPS = 1
 
     def __init__(self):
         self._task: Optional[Dict[str, Any]] = None
         self._obs: Optional[Observation] = None
         self._state: Optional[EnvState] = None
-
-        # Register graders for all tasks (required by OpenEnv validator)
+        # Explicitly register grader for every task
         self._graders = {task_id: grade for task_id in TASKS.keys()}
-        logger.info(f"[ENV] Registered graders for tasks: {list(self._graders.keys())}")
+        logger.info(f"[ENV] Graders registered: {list(self._graders.keys())}")
 
     def reset(self, task_id: str = "task_easy") -> Observation:
         self._task = get_task(task_id)
-
         self._obs = Observation(
             task_id=self._task["task_id"],
             difficulty=self._task["difficulty"],
@@ -38,7 +32,6 @@ class ResumeScreeningEnv:
             history=[],
             step_count=0,
         )
-
         self._state = EnvState(
             task_id=self._task["task_id"],
             difficulty=self._task["difficulty"],
@@ -46,8 +39,7 @@ class ResumeScreeningEnv:
             done=False,
             cumulative_reward=0.0,
         )
-
-        logger.info(f"[ENV] Reset to task '{task_id}'")
+        logger.info(f"[ENV] Reset: task_id={task_id}")
         return self._obs
 
     def step(self, action: Action) -> Tuple[Observation, Reward, bool, Dict[str, Any]]:
@@ -56,9 +48,11 @@ class ResumeScreeningEnv:
         if self._state.done:
             raise RuntimeError("Episode done. Call reset().")
 
-        # Use registered grader for this task
-        grader_fn = self._graders.get(self._task["task_id"], grade)
+        grader_fn = self._graders[self._task["task_id"]]
         reward = grader_fn(action, self._task)
+
+        # Validate score is strictly in range
+        assert 0.0 < reward.total < 1.0, f"Score out of range: {reward.total}"
 
         self._state.current_step += 1
         self._state.cumulative_reward += reward.total
@@ -66,26 +60,25 @@ class ResumeScreeningEnv:
         self._state.last_reward = reward
         self._state.done = True
 
-        history_entry = HistoryEntry(
+        self._obs.history.append(HistoryEntry(
             step=self._state.current_step,
             action=action,
             reward=reward.total,
             feedback=reward.feedback,
-        )
-        self._obs.history.append(history_entry)
+        ))
         self._obs.step_count = self._state.current_step
-
-        logger.info(f"[ENV] Step: decision={action.decision}, reward={reward.total:.4f}")
 
         info = {
             "task_id": self._task["task_id"],
             "difficulty": self._task["difficulty"],
             "expected_decision": self._task["expected_decision"],
+            "has_grader": True,
+            "score_in_range": 0.0 < reward.total < 1.0,
             "reward_breakdown": reward.breakdown.model_dump(),
             "cumulative_reward": self._state.cumulative_reward,
-            "grader": "deterministic_keyword_grader",
         }
 
+        logger.info(f"[ENV] Step: decision={action.decision} reward={reward.total:.4f} in_range={info['score_in_range']}")
         return self._obs, reward, True, info
 
     def state(self) -> EnvState:
@@ -97,8 +90,5 @@ class ResumeScreeningEnv:
         return list_tasks()
 
     def get_graders(self):
-        """Return registered grader info for all tasks."""
-        return {
-            task_id: {"grader": "deterministic_keyword_grader", "task_id": task_id}
-            for task_id in self._graders.keys()
-        }
+        return {tid: {"has_grader": True, "type": "deterministic"} for tid in self._graders}
+

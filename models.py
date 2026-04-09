@@ -1,36 +1,27 @@
 """
 models.py — Pydantic models for the Resume Screening OpenEnv.
-Defines typed structures for Observation, Action, and Reward.
+All reward scores are strictly between 0.0 and 1.0 (exclusive).
 """
 
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-# ─── Action ───────────────────────────────────────────────────────────────────
-
 class Action(BaseModel):
-    """Agent's hiring decision and reasoning for a given resume."""
     decision: Literal["accept", "reject", "shortlist"] = Field(
-        ..., description="Hiring decision: accept, reject, or shortlist the candidate."
+        ..., description="Hiring decision."
     )
-    reasoning: str = Field(
-        ..., min_length=10, description="Agent's explanation for the decision."
-    )
+    reasoning: str = Field(..., min_length=10)
 
-
-# ─── Observation ──────────────────────────────────────────────────────────────
 
 class HistoryEntry(BaseModel):
-    """A single past step in the episode."""
     step: int
     action: Action
     reward: float
-    feedback: str  # human-readable grader feedback
+    feedback: str
 
 
 class Observation(BaseModel):
-    """What the agent sees at each step."""
     task_id: str
     difficulty: Literal["easy", "medium", "hard"]
     job_description: str
@@ -39,28 +30,21 @@ class Observation(BaseModel):
     step_count: int = 0
 
 
-# ─── Reward ───────────────────────────────────────────────────────────────────
-
 class RewardBreakdown(BaseModel):
-    """Fine-grained scoring components."""
-    skill_match_score: float = Field(..., ge=0.0, le=1.0)
-    decision_correctness: float = Field(..., ge=0.0, le=1.0)
-    reasoning_quality: float = Field(..., ge=0.0, le=1.0)
-    partial_credit: float = Field(..., ge=0.0, le=1.0)
-    penalty: float = Field(..., ge=0.0, le=1.0)  # how much was deducted
+    skill_match_score: float = Field(..., gt=0.0, lt=1.0)
+    decision_correctness: float = Field(..., gt=0.0, lt=1.0)
+    reasoning_quality: float = Field(..., gt=0.0, lt=1.0)
+    partial_credit: float = Field(..., gt=0.0, lt=1.0)
+    penalty: float = Field(..., gt=0.0, lt=1.0)
 
 
 class Reward(BaseModel):
-    """Composite reward with breakdown."""
-    total: float = Field(..., ge=0.0, le=1.0)
+    total: float = Field(..., gt=0.0, lt=1.0)
     breakdown: RewardBreakdown
-    feedback: str  # narrative explanation
+    feedback: str
 
-
-# ─── Environment State ────────────────────────────────────────────────────────
 
 class EnvState(BaseModel):
-    """Internal state of the environment."""
     task_id: str
     difficulty: str
     current_step: int

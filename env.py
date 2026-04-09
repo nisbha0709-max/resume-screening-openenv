@@ -1,50 +1,33 @@
 """
 env.py — Core environment logic for the Resume Screening OpenEnv.
-
-Implements the OpenEnv interface:
-  - reset(task_id)  → Observation
-  - step(action)    → (Observation, Reward, done, info)
-  - state()         → EnvState
+Each task has a grader. Scores are always strictly between 0 and 1.
 """
 
 import logging
 from typing import Optional, Tuple, Dict, Any
 
 from models import Action, Observation, Reward, EnvState, HistoryEntry
-from tasks import get_task, list_tasks
+from tasks import get_task, list_tasks, TASKS
 from grader import grade
 
 logger = logging.getLogger(__name__)
 
 
 class ResumeScreeningEnv:
-    """
-    OpenEnv-compliant environment for AI-driven resume screening.
+    """OpenEnv-compliant resume screening environment."""
 
-    One episode = one task (one job description + one resume).
-    The agent takes a single action (decision + reasoning).
-    The episode terminates after that action.
-    """
-
-    MAX_STEPS = 1  # Each episode is a single decision
+    MAX_STEPS = 1
 
     def __init__(self):
         self._task: Optional[Dict[str, Any]] = None
         self._obs: Optional[Observation] = None
         self._state: Optional[EnvState] = None
 
-    # ─── reset ────────────────────────────────────────────────────────────────
+        # Register graders for all tasks (required by OpenEnv validator)
+        self._graders = {task_id: grade for task_id in TASKS.keys()}
+        logger.info(f"[ENV] Registered graders for tasks: {list(self._graders.keys())}")
 
     def reset(self, task_id: str = "task_easy") -> Observation:
-        """
-        Reset the environment to the beginning of a new episode.
-
-        Args:
-            task_id: One of 'task_easy', 'task_medium', 'task_hard'.
-
-        Returns:
-            Initial Observation (job description + resume, empty history).
-        """
         self._task = get_task(task_id)
 
         self._obs = Observation(
@@ -64,41 +47,25 @@ class ResumeScreeningEnv:
             cumulative_reward=0.0,
         )
 
-        logger.info(f"[ENV] Reset to task '{task_id}' (difficulty={self._task['difficulty']})")
+        logger.info(f"[ENV] Reset to task '{task_id}'")
         return self._obs
 
-    # ─── step ─────────────────────────────────────────────────────────────────
-
     def step(self, action: Action) -> Tuple[Observation, Reward, bool, Dict[str, Any]]:
-        """
-        Execute one agent action.
-
-        Args:
-            action: Agent's decision + reasoning.
-
-        Returns:
-            (observation, reward, done, info)
-        """
         if self._task is None or self._state is None:
-            raise RuntimeError("Environment not initialized. Call reset() first.")
-
+            raise RuntimeError("Call reset() first.")
         if self._state.done:
-            raise RuntimeError("Episode already done. Call reset() to start a new episode.")
+            raise RuntimeError("Episode done. Call reset().")
 
-        # ── Grade the action ──────────────────────────────────────────────────
-        reward = grade(action, self._task)
+        # Use registered grader for this task
+        grader_fn = self._graders.get(self._task["task_id"], grade)
+        reward = grader_fn(action, self._task)
 
-        # ── Update step counter ───────────────────────────────────────────────
         self._state.current_step += 1
         self._state.cumulative_reward += reward.total
         self._state.last_action = action
         self._state.last_reward = reward
+        self._state.done = True
 
-        # ── Episode ends after one decision ───────────────────────────────────
-        done = True
-        self._state.done = done
-
-        # ── Append to observation history ─────────────────────────────────────
         history_entry = HistoryEntry(
             step=self._state.current_step,
             action=action,
@@ -108,10 +75,7 @@ class ResumeScreeningEnv:
         self._obs.history.append(history_entry)
         self._obs.step_count = self._state.current_step
 
-        logger.info(
-            f"[ENV] Step {self._state.current_step}: "
-            f"decision={action.decision}, reward={reward.total:.4f}, done={done}"
-        )
+        logger.info(f"[ENV] Step: decision={action.decision}, reward={reward.total:.4f}")
 
         info = {
             "task_id": self._task["task_id"],
@@ -119,20 +83,22 @@ class ResumeScreeningEnv:
             "expected_decision": self._task["expected_decision"],
             "reward_breakdown": reward.breakdown.model_dump(),
             "cumulative_reward": self._state.cumulative_reward,
+            "grader": "deterministic_keyword_grader",
         }
 
-        return self._obs, reward, done, info
-
-    # ─── state ────────────────────────────────────────────────────────────────
+        return self._obs, reward, True, info
 
     def state(self) -> EnvState:
-        """Return the current internal state of the environment."""
         if self._state is None:
-            raise RuntimeError("Environment not initialized. Call reset() first.")
+            raise RuntimeError("Call reset() first.")
         return self._state
 
-    # ─── utility ──────────────────────────────────────────────────────────────
-
     def available_tasks(self):
-        """Return a list of available task summaries."""
         return list_tasks()
+
+    def get_graders(self):
+        """Return registered grader info for all tasks."""
+        return {
+            task_id: {"grader": "deterministic_keyword_grader", "task_id": task_id}
+            for task_id in self._graders.keys()
+        }

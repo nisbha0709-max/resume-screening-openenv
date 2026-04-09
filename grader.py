@@ -1,124 +1,72 @@
 """
-grader.py — Deterministic, multi-factor reward grader for the Resume Screening OpenEnv.
-
-IMPORTANT: All scores are strictly between 0.0 and 1.0 (exclusive).
-Min score: 0.01, Max score: 0.99
+grader.py - Deterministic grader. All scores strictly between 0.0 and 1.0.
 """
 
 from models import Action, Reward, RewardBreakdown
 from typing import Dict, Any
 
 
-# ─── Weights ──────────────────────────────────────────────────────────────────
-WEIGHT_SKILL       = 0.25
-WEIGHT_DECISION    = 0.40
-WEIGHT_REASONING   = 0.20
-WEIGHT_PARTIAL     = 0.15
+def _clamp(value: float) -> float:
+    """Force value to be strictly between 0.0 and 1.0."""
+    return round(min(0.99, max(0.01, float(value))), 4)
 
-# ─── Score bounds (strictly between 0 and 1) ─────────────────────────────────
-SCORE_MIN = 0.01
-SCORE_MAX = 0.99
 
-# ─── Decision Correctness Matrix ─────────────────────────────────────────────
-# Maps (expected, given) → (correctness_score, penalty, partial_credit)
-DECISION_MATRIX = {
-    ("accept",    "accept"):    (0.95, 0.0,  0.0),
-    ("reject",    "reject"):    (0.95, 0.0,  0.0),
-    ("shortlist", "shortlist"): (0.95, 0.0,  0.0),
+def _skill_match(resume: str, skills: list) -> float:
+    if not skills:
+        return 0.50
+    resume_lower = resume.lower()
+    matched = sum(1 for s in skills if s.lower() in resume_lower)
+    ratio = matched / len(skills)
+    # Scale to 0.10 - 0.90 to avoid 0.0 or 1.0
+    return _clamp(0.10 + ratio * 0.80)
 
-    ("accept",    "shortlist"): (0.40, 0.10, 0.45),
-    ("reject",    "shortlist"): (0.40, 0.10, 0.45),
-    ("shortlist", "accept"):    (0.30, 0.10, 0.30),
-    ("shortlist", "reject"):    (0.30, 0.10, 0.30),
 
-    ("accept",    "reject"):    (0.05, 0.25, 0.0),
-    ("reject",    "accept"):    (0.05, 0.25, 0.0),
+def _reasoning_score(reasoning: str, keywords: list) -> float:
+    if not keywords:
+        return 0.50
+    r = reasoning.lower()
+    matched = sum(1 for k in keywords if k.lower() in r)
+    ratio = matched / len(keywords)
+    return _clamp(0.10 + min(ratio * 1.5, 1.0) * 0.80)
+
+
+# Maps (expected, given) -> (base_score, penalty, partial)
+MATRIX = {
+    ("accept",    "accept"):    (0.90, 0.00, 0.00),
+    ("reject",    "reject"):    (0.90, 0.00, 0.00),
+    ("shortlist", "shortlist"): (0.90, 0.00, 0.00),
+    ("accept",    "shortlist"): (0.40, 0.05, 0.40),
+    ("reject",    "shortlist"): (0.40, 0.05, 0.40),
+    ("shortlist", "accept"):    (0.35, 0.05, 0.25),
+    ("shortlist", "reject"):    (0.35, 0.05, 0.25),
+    ("accept",    "reject"):    (0.08, 0.20, 0.00),
+    ("reject",    "accept"):    (0.08, 0.20, 0.00),
 }
 
 
-def _clamp(value: float) -> float:
-    """Clamp to strictly (0.0, 1.0) — never exactly 0 or 1."""
-    return round(max(SCORE_MIN, min(SCORE_MAX, value)), 4)
-
-
-def _skill_match_score(resume: str, required_skills: list) -> float:
-    """Keyword overlap between resume and required skills. Always strictly (0,1)."""
-    if not required_skills:
-        return 0.50
-
-    resume_lower = resume.lower()
-    matched = sum(1 for skill in required_skills if skill.lower() in resume_lower)
-    raw = matched / len(required_skills)
-
-    # Scale so it never hits exactly 0.0 or 1.0
-    scaled = 0.05 + (raw * 0.90)
-    return _clamp(scaled)
-
-
-def _reasoning_quality_score(reasoning: str, good_keywords: list) -> float:
-    """Keyword hits in agent reasoning. Always strictly (0,1)."""
-    if not good_keywords:
-        return 0.50
-
-    reasoning_lower = reasoning.lower()
-    matched = sum(1 for kw in good_keywords if kw.lower() in reasoning_lower)
-    raw = matched / max(len(good_keywords), 1)
-
-    # Scale: minimum 0.05 even with zero hits
-    scaled = 0.05 + (min(raw * 1.6, 1.0) * 0.90)
-    return _clamp(scaled)
-
-
 def grade(action: Action, task: Dict[str, Any]) -> Reward:
-    """
-    Grade an agent's action against a task definition.
-    Always returns a reward strictly between 0.0 and 1.0.
-    """
-    expected   = task["expected_decision"]
-    given      = action.decision
-    resume     = task["resume"]
-    req_skills = task.get("required_skills", [])
-    good_kws   = task.get("good_reasoning_keywords", [])
+    expected = task["expected_decision"]
+    given = action.decision
 
-    # ── Component scores ─────────────────────────────────────────────────────
-    skill_score = _skill_match_score(resume, req_skills)
-    correctness, penalty, partial_credit = DECISION_MATRIX.get(
-        (expected, given), (0.05, 0.25, 0.0)
-    )
-    reasoning_score = _reasoning_quality_score(action.reasoning, good_kws)
+    skill  = _skill_match(task["resume"], task.get("required_skills", []))
+    reason = _reasoning_score(action.reasoning, task.get("good_reasoning_keywords", []))
+    base, penalty, partial = MATRIX.get((expected, given), (0.08, 0.20, 0.00))
 
-    # ── Weighted total ────────────────────────────────────────────────────────
-    weighted = (
-        skill_score     * WEIGHT_SKILL    +
-        correctness     * WEIGHT_DECISION +
-        reasoning_score * WEIGHT_REASONING +
-        partial_credit  * WEIGHT_PARTIAL
-    )
-
-    # ── Apply penalty then clamp strictly between 0 and 1 ────────────────────
-    total = _clamp(weighted - penalty)
-
-    # ── Feedback ──────────────────────────────────────────────────────────────
-    feedback_parts = [
-        f"Expected: '{expected}' | Given: '{given}'.",
-        f"Skill match: {skill_score:.2f}.",
-        f"Decision correctness: {correctness:.2f}.",
-        f"Reasoning quality: {reasoning_score:.2f}.",
-    ]
-    if partial_credit > 0:
-        feedback_parts.append(f"Partial credit: +{partial_credit:.2f}.")
-    if penalty > 0:
-        feedback_parts.append(f"Penalty: -{penalty:.2f}.")
-    feedback_parts.append(f"Final reward: {total:.4f}.")
+    raw = (skill * 0.25) + (base * 0.40) + (reason * 0.20) + (partial * 0.15) - penalty
+    total = _clamp(raw)
 
     return Reward(
         total=total,
         breakdown=RewardBreakdown(
-            skill_match_score=skill_score,
-            decision_correctness=_clamp(correctness),
-            reasoning_quality=reasoning_score,
-            partial_credit=_clamp(partial_credit) if partial_credit > 0 else SCORE_MIN,
-            penalty=_clamp(penalty) if penalty > 0 else SCORE_MIN,
+            skill_match_score=skill,
+            decision_correctness=_clamp(base),
+            reasoning_quality=reason,
+            partial_credit=_clamp(partial) if partial > 0 else 0.01,
+            penalty=_clamp(penalty) if penalty > 0 else 0.01,
         ),
-        feedback=" ".join(feedback_parts),
+        feedback=(
+            f"Expected '{expected}', got '{given}'. "
+            f"skill={skill:.2f} decision={base:.2f} "
+            f"reasoning={reason:.2f} total={total:.4f}"
+        ),
     )
